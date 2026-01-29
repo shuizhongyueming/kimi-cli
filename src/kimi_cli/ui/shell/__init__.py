@@ -74,6 +74,7 @@ class Shell:
             thinking=self.soul.thinking or False,
             agent_mode_slash_commands=list(self._available_slash_commands.values()),
             shell_mode_slash_commands=shell_mode_registry.list_commands(),
+            keybindings=self.soul.config.keybindings if hasattr(self.soul, 'config') else None,
         ) as prompt_session:
             try:
                 while True:

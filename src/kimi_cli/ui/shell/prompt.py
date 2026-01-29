@@ -41,10 +41,12 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from pydantic import BaseModel, ValidationError
 
+from kimi_cli.config import KeybindingsConfig
 from kimi_cli.llm import ModelCapability
 from kimi_cli.share import get_share_dir
 from kimi_cli.soul import StatusSnapshot
 from kimi_cli.ui.shell.console import console
+from kimi_cli.ui.shell.keyboard import KeyboardListener, KeyEvent
 from kimi_cli.utils.clipboard import grab_image_from_clipboard, is_clipboard_available
 from kimi_cli.utils.logging import logger
 from kimi_cli.utils.media_tags import wrap_media_part
@@ -646,6 +648,7 @@ class CustomPromptSession:
         thinking: bool,
         agent_mode_slash_commands: Sequence[SlashCommand[Any]],
         shell_mode_slash_commands: Sequence[SlashCommand[Any]],
+        keybindings: KeybindingsConfig | None = None,
     ) -> None:
         history_dir = get_share_dir() / "user-history"
         history_dir.mkdir(parents=True, exist_ok=True)
@@ -682,6 +685,10 @@ class CustomPromptSession:
         # Build key bindings
         _kb = KeyBindings()
 
+        def _insert_newline_handler(event: KeyPressEvent) -> None:
+            """Insert a newline."""
+            event.current_buffer.insert_text("\n")
+
         @_kb.add("enter", filter=has_completions)
         def _(event: KeyPressEvent) -> None:
             """Accept the first completion when Enter is pressed and completions are shown."""
@@ -701,11 +708,26 @@ class CustomPromptSession:
             # Redraw UI
             event.app.invalidate()
 
-        @_kb.add("escape", "enter", eager=True)
-        @_kb.add("c-j", eager=True)
-        def _(event: KeyPressEvent) -> None:
-            """Insert a newline when Alt-Enter or Ctrl-J is pressed."""
-            event.current_buffer.insert_text("\n")
+        # Apply custom keybindings for inserting newlines
+        insert_newline_bindings = (
+            keybindings.insert_newline if keybindings else ["escape enter", "c-j"]
+        )
+        
+        # Track if we need to listen for Shift+Enter via keyboard listener
+        self._shift_enter_enabled = "shift-enter" in insert_newline_bindings
+        self._keyboard_listener: KeyboardListener | None = None
+        self._shift_enter_task: asyncio.Task[None] | None = None
+        
+        # Register standard keybindings (excluding shift-enter which needs special handling)
+        for key_combo in insert_newline_bindings:
+            if key_combo == "shift-enter":
+                continue  # Skip shift-enter, handled separately
+            keys = key_combo.split()
+            try:
+                _kb.add(*keys, eager=True)(_insert_newline_handler)
+            except ValueError as e:
+                # Log invalid keybinding but don't crash
+                logger.warning(f"Invalid keybinding '{key_combo}': {e}")
 
         if is_clipboard_available():
 
@@ -792,12 +814,40 @@ class CustomPromptSession:
                 pass
 
         self._status_refresh_task = asyncio.create_task(_refresh(_REFRESH_INTERVAL))
+        
+        # Start keyboard listener for Shift+Enter if enabled
+        if self._shift_enter_enabled:
+            self._keyboard_listener = KeyboardListener()
+            
+            async def _listen_shift_enter() -> None:
+                await self._keyboard_listener.start()
+                try:
+                    while True:
+                        event = await self._keyboard_listener.get()
+                        if event == KeyEvent.SHIFT_ENTER:
+                            # Insert newline in the current buffer
+                            try:
+                                buff = self._session.default_buffer
+                                buff.insert_text("\n")
+                            except Exception:
+                                pass
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    await self._keyboard_listener.stop()
+            
+            self._shift_enter_task = asyncio.create_task(_listen_shift_enter())
+        
         return self
 
     def __exit__(self, *_) -> None:
         if self._status_refresh_task is not None and not self._status_refresh_task.done():
             self._status_refresh_task.cancel()
         self._status_refresh_task = None
+        
+        # Stop Shift+Enter keyboard listener
+        if self._shift_enter_task is not None and not self._shift_enter_task.done():
+            self._shift_enter_task.cancel()
 
     def _try_paste_image(self, event: KeyPressEvent) -> bool:
         """Try to paste an image from the clipboard. Return True if successful."""

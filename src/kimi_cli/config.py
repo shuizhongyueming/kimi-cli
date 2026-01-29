@@ -129,6 +129,15 @@ class MCPConfig(BaseModel):
     )
 
 
+class KeybindingsConfig(BaseModel):
+    """Keybindings configuration for the shell prompt."""
+
+    insert_newline: list[str] = Field(
+        default_factory=lambda: ["c-j", "escape enter"],
+        description="Keybindings for inserting a newline. Use prompt_toolkit key notation (e.g., 'c-j' for Ctrl-J, 'escape enter' for Alt-Enter) or 'shift-enter' for Shift+Enter (requires terminal support for kitty keyboard protocol or xterm modifyOtherKeys).",
+    )
+
+
 class Config(BaseModel):
     """Main configuration structure."""
 
@@ -146,6 +155,7 @@ class Config(BaseModel):
     loop_control: LoopControl = Field(default_factory=LoopControl, description="Agent loop control")
     services: Services = Field(default_factory=Services, description="Services configuration")
     mcp: MCPConfig = Field(default_factory=MCPConfig, description="MCP configuration")
+    keybindings: KeybindingsConfig = Field(default_factory=KeybindingsConfig, description="Keybindings configuration")
 
     @model_validator(mode="after")
     def validate_model(self) -> Self:

@@ -19,6 +19,7 @@ class KeyEvent(Enum):
     ESCAPE = auto()
     TAB = auto()
     CTRL_E = auto()
+    SHIFT_ENTER = auto()  # Shift+Enter for inserting newlines
 
 
 class KeyboardListener:
@@ -155,7 +156,8 @@ def _listen_for_keyboard_unix(
 
             if c == b"\x1b":
                 sequence = c
-                for _ in range(2):
+                # Read more bytes for CSI sequences (up to 10 for extended sequences)
+                for _ in range(10):
                     if cancel.is_set():
                         break
                     try:
@@ -165,14 +167,24 @@ def _listen_for_keyboard_unix(
                     if not fragment:
                         break
                     sequence += fragment
+                    # Check for complete sequence
                     if sequence in _ARROW_KEY_MAP:
                         break
+                    if sequence in _SHIFT_ENTER_SEQUENCES:
+                        break
+                    # Stop reading if we get a letter or ~ (end of CSI sequence)
+                    if fragment and fragment[0] in range(0x40, 0x80) and fragment[0] != ord('['):
+                        break
 
-                event = _ARROW_KEY_MAP.get(sequence)
-                if event is not None:
-                    emit(event)
-                elif sequence == b"\x1b":
-                    emit(KeyEvent.ESCAPE)
+                # Check for Shift+Enter first
+                if sequence in _SHIFT_ENTER_SEQUENCES:
+                    emit(KeyEvent.SHIFT_ENTER)
+                else:
+                    event = _ARROW_KEY_MAP.get(sequence)
+                    if event is not None:
+                        emit(event)
+                    elif sequence == b"\x1b":
+                        emit(KeyEvent.ESCAPE)
             elif c in (b"\r", b"\n"):
                 emit(KeyEvent.ENTER)
             elif c == b"\t":
@@ -214,21 +226,32 @@ def _listen_for_keyboard_windows(
                     emit(event)
             elif c == b"\x1b":
                 sequence = c
-                for _ in range(2):
+                # Read more bytes for CSI sequences (up to 10 for extended sequences)
+                for _ in range(10):
                     if cancel.is_set():
                         break
                     fragment = msvcrt.getch() if msvcrt.kbhit() else b""
                     if not fragment:
                         break
                     sequence += fragment
+                    # Check for complete sequence
                     if sequence in _ARROW_KEY_MAP:
                         break
+                    if sequence in _SHIFT_ENTER_SEQUENCES:
+                        break
+                    # Stop reading if we get a letter or ~ (end of CSI sequence)
+                    if fragment and fragment[0] in range(0x40, 0x80) and fragment[0] != ord('['):
+                        break
 
-                event = _ARROW_KEY_MAP.get(sequence)
-                if event is not None:
-                    emit(event)
-                elif sequence == b"\x1b":
-                    emit(KeyEvent.ESCAPE)
+                # Check for Shift+Enter first
+                if sequence in _SHIFT_ENTER_SEQUENCES:
+                    emit(KeyEvent.SHIFT_ENTER)
+                else:
+                    event = _ARROW_KEY_MAP.get(sequence)
+                    if event is not None:
+                        emit(event)
+                    elif sequence == b"\x1b":
+                        emit(KeyEvent.ESCAPE)
             elif c in (b"\r", b"\n"):
                 emit(KeyEvent.ENTER)
             elif c == b"\t":
@@ -246,6 +269,13 @@ _ARROW_KEY_MAP: dict[bytes, KeyEvent] = {
     b"\x1b[B": KeyEvent.DOWN,
     b"\x1b[C": KeyEvent.RIGHT,
     b"\x1b[D": KeyEvent.LEFT,
+}
+
+# Extended keyboard protocol sequences (kitty / xterm modifyOtherKeys)
+# These allow detection of Shift+Enter and other modified keys
+_SHIFT_ENTER_SEQUENCES: set[bytes] = {
+    b"\x1b[13;2u",  # kitty keyboard protocol: Shift+Enter
+    b"\x1b[27;2;13~",  # xterm modifyOtherKeys: Shift+Enter
 }
 
 _WINDOWS_KEY_MAP: dict[bytes, KeyEvent] = {
